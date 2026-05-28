@@ -3,10 +3,10 @@ import equinox as eqx
 import jax
 import jax.numpy as jnp
 import numpy as np
-import protenix.backend as protenix_backend
+import protenij.backend as protenix_backend
 from jaxtyping import Array, Float, PyTree
 
-from protenix.data.template import ChainInput, featurize
+from protenij.data.template import ChainInput, featurize
 
 from mosaic.losses.protenix import (
     MultiSampleProtenixLoss,
@@ -32,7 +32,7 @@ def install_protenix_msa_auth_fix():
     if _MSA_AUTH_FIX_INSTALLED:
         return
     try:
-        import protenix.web_service.colab_request_utils as _cru
+        import protenij.web_service.colab_request_utils as _cru
         _cru.HTTPBasicAuth = lambda *a, **kw: None
     except Exception:
         return
