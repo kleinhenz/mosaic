@@ -27,7 +27,7 @@ dependencies = [
     "equinox>=0.13.0",
     "torch==2.7.1",
     "numpy>=2.1",
-    "protenix",
+    "protenij",
     "httpx>=0.28.1",
     "joltzgen",
     "nvidia-cublas-cu12>=12.9.1.4",
@@ -75,7 +75,7 @@ torch = { index = "pytorch" }
 torchvision = { index = "pytorch" }
 joltz = { git = "https://github.com/nboyd/joltz" }
 esmj = { git = "https://github.com/escalante-bio/esmj" }
-protenix = { git = "https://github.com/escalante-bio/protenij"}
+protenij = { git = "https://github.com/kleinhenz/protenij", branch = "kleinhej/dev" }
 jablang = { git = "https://github.com/escalante-bio/jablang" }
 joltzgen = { git = "https://github.com/escalante-bio/joltzgen.git" }
 jopenfold3 = { git = "https://github.com/escalante-bio/jopenfold3.git" }

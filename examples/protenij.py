@@ -21,7 +21,7 @@ with app.setup:
     import equinox as eqx
 
     import jax.numpy as jnp
-    from protenix.protenij import TrunkEmbedding
+    from protenij.protenij import TrunkEmbedding
     from mosaic.structure_prediction import TargetChain
     from mosaic.models.protenix import ProtenixMini, Protenix2025, ProtenixBase
 

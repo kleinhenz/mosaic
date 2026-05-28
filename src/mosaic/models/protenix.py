@@ -4,11 +4,11 @@ import equinox as eqx
 import jax
 import jax.numpy as jnp
 import numpy as np
-from protenix.backend import load_model as backend_load_model
+from protenij.backend import load_model as backend_load_model
 from pathlib import Path
 from jaxtyping import Array, Float, PyTree
 
-from protenix.data.template import ChainInput, featurize
+from protenij.data.template import ChainInput, featurize
 
 from mosaic.losses.protenix import (
     MultiSampleProtenixLoss,

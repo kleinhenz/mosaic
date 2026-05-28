@@ -9,12 +9,12 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 from jaxtyping import Array, Float, PyTree
-from protenix.data.constants import PRO_STD_RESIDUES, RES_ATOMS_DICT
-from protenix.protenij import (
+from protenij.data.constants import PRO_STD_RESIDUES, RES_ATOMS_DICT
+from protenij.protenij import (
     InitialEmbedding,
     TrunkEmbedding,
 )
-from protenix.protenij import Protenix as Protenij
+from protenij.protenij import Protenix as Protenij
 
 from mosaic.common import TOKENS, LinearCombination, LossTerm
 from mosaic.losses.atom37 import ATOM37_INDEX, scatter_atom37
