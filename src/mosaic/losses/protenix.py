@@ -1,4 +1,5 @@
 import copy
+import dataclasses
 
 # set "PROTENIX_DATA_ROOT_DIR" env variable
 import os
@@ -262,6 +263,17 @@ class MultiSampleProtenixLoss(LossTerm):
     name: str = "protenix"
     initial_recycling_state: TrunkEmbedding | None = None
     reduction: any = jnp.mean
+    # When ``features`` was bucket-padded by ``protenij.padding.pad_features``,
+    # these record the real (n_tokens, n_atoms) so the per-sample model output
+    # can be sliced back to real shapes before the wrapped ``self.loss`` sees
+    # it.  Loss terms (BinderTargetPAE, IPTMLoss, …) slice off ``binder_len``
+    # to read "the rest of the chain" and assume that's the real target; with
+    # padding present, "the rest" silently includes padding tokens, which
+    # contaminates means and pair_masks.  Slicing here keeps every loss
+    # working unmodified.  ``None`` means features were not padded and the
+    # original output is passed through.
+    n_real_tokens: int | None = None
+    n_real_atoms: int | None = None
 
     """
         Run the structure and confidence modules multiple times from the same trunk output.
@@ -293,6 +305,12 @@ class MultiSampleProtenixLoss(LossTerm):
                 sampling_steps=self.sampling_steps,
                 key=key,
             )
+            if self.n_real_tokens is not None:
+                output = _slice_padded_model_output(
+                    output,
+                    n_real_tokens=self.n_real_tokens,
+                    n_real_atoms=self.n_real_atoms,
+                )
             v, aux = self.loss(
                 sequence=sequence,
                 output=output,
@@ -314,3 +332,57 @@ class MultiSampleProtenixLoss(LossTerm):
             return v
 
         return self.reduction(vs), jax.tree.map(_sort_if_scalar, auxs)
+
+
+def _slice_padded_model_output(
+    model_output: StructureModelOutput,
+    *,
+    n_real_tokens: int,
+    n_real_atoms: int,
+) -> StructureModelOutput:
+    """Trim every token-axis (size N) and atom-axis (size in
+    ``structure_coordinates``) field of a Protenix StructureModelOutput back
+    to its real extent.
+
+    Used by :class:`MultiSampleProtenixLoss` when bucket padding is on, so
+    downstream loss terms (BinderTargetPAE, IPTMLoss, etc.) see real shapes
+    and don't average padding entries into their losses.
+    """
+    n = n_real_tokens
+    a = n_real_atoms
+    return dataclasses.replace(
+        model_output,
+        distogram_logits=model_output.distogram_logits[:n, :n, :],
+        plddt=model_output.plddt[:n],
+        pae=model_output.pae[:n, :n],
+        pae_logits=model_output.pae_logits[:n, :n, :],
+        structure_coordinates=model_output.structure_coordinates[:, :a, :],
+        backbone_coordinates=model_output.backbone_coordinates[:n],
+        full_sequence=model_output.full_sequence[:n],
+        asym_id=model_output.asym_id[:n],
+        residue_idx=model_output.residue_idx[:n],
+        atom37_coords=model_output.atom37_coords[:n],
+        atom37_mask=model_output.atom37_mask[:n],
+    )
+
+
+def real_shapes_from_padded_features(
+    features: PyTree,
+) -> tuple[int | None, int | None]:
+    """Return ``(n_real_tokens, n_real_atoms)`` for a feature dict produced by
+    :func:`protenij.padding.pad_features`, or ``(None, None)`` for features
+    that were not bucket-padded.
+
+    Detection keys off the ``token_mask`` key that ``pad_features`` adds.
+    Real atom count is recovered from ``atom_to_token_idx``: real atoms map
+    to token indices in ``[0, n_real_tokens)``, padding atoms map to
+    ``[n_real_tokens, b)``, so ``(atom_to_token_idx < n_real_tokens).sum()``
+    gives the original atom count.
+    """
+    if "token_mask" not in features:
+        return None, None
+    token_mask = np.asarray(features["token_mask"])
+    n_real_tokens = int(token_mask.sum())
+    atom_to_token_idx = np.asarray(features["atom_to_token_idx"])
+    n_real_atoms = int((atom_to_token_idx < n_real_tokens).sum())
+    return n_real_tokens, n_real_atoms

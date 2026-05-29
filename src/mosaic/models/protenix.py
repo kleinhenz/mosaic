@@ -12,9 +12,11 @@ from protenij.data.template import ChainInput, featurize
 
 from mosaic.losses.protenix import (
     MultiSampleProtenixLoss,
+    _slice_padded_model_output,
     biotite_array_to_gemmi_struct,
     get_trunk_state,
     protenix_forward_from_trunk,
+    real_shapes_from_padded_features,
     set_binder_sequence,
 )
 from mosaic.losses.structure_prediction import IPTMLoss
@@ -93,6 +95,13 @@ class Protenix(StructurePredictionModel):
     ):
         if sampling_steps is None:
             sampling_steps = self.default_sample_steps
+        # If `features` was bucket-padded by protenij.padding.pad_features (the
+        # `pad_to_buckets` path in mosaic_design), compute the real shapes
+        # once at construction time.  MultiSampleProtenixLoss uses these to
+        # slice the per-sample model output back to real shapes before the
+        # loss terms see it, so binder-vs-target slicing in BinderTargetPAE,
+        # IPTMLoss, etc. doesn't pick up padding entries.
+        n_real_tokens, n_real_atoms = real_shapes_from_padded_features(features)
         return MultiSampleProtenixLoss(
             model=self.protenix,
             features=features,
@@ -102,6 +111,8 @@ class Protenix(StructurePredictionModel):
             num_samples=num_samples,
             reduction=reduction,
             initial_recycling_state=initial_recycling_state,
+            n_real_tokens=n_real_tokens,
+            n_real_atoms=n_real_atoms,
         )
 
     @eqx.filter_jit
@@ -155,6 +166,18 @@ class Protenix(StructurePredictionModel):
             initial_recycling_state=initial_recycling_state,
             key=key,
         )
+        # When `features` was bucket-padded by protenij.padding.pad_features,
+        # `output` carries padded (token, atom) axes.  Slice back to real
+        # shapes here so the surfaced plddt/pae/structure_coordinates and the
+        # biotite atom_array agree on size — and so iptm is computed without
+        # padding contamination.
+        n_real_tokens, n_real_atoms = real_shapes_from_padded_features(features)
+        if n_real_tokens is not None:
+            output = _slice_padded_model_output(
+                output,
+                n_real_tokens=n_real_tokens,
+                n_real_atoms=n_real_atoms,
+            )
         seq = PSSM if PSSM is not None else jnp.zeros((0, 20))
         iptm = -IPTMLoss()(seq, output, key=jax.random.key(0))[0]
         return StructurePrediction(
