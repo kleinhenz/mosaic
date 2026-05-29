@@ -24,7 +24,11 @@ from mosaic.losses.protenix import (
     _slice_padded_model_output,
     real_shapes_from_padded_features,
 )
-from mosaic.losses.structure_prediction import StructureModelOutput
+from mosaic.losses.structure_prediction import (
+    BinderTargetPAE,
+    IPTMLoss,
+    StructureModelOutput,
+)
 
 
 def _padded_output(b: int, a_bucket: int) -> StructureModelOutput:
@@ -45,6 +49,57 @@ def _padded_output(b: int, a_bucket: int) -> StructureModelOutput:
         atom37_coords=jnp.zeros((b, 37, 3)),
         atom37_mask=jnp.zeros((b, 37)),
     )
+
+
+def _embed_real_output_in_padding(
+    real: StructureModelOutput,
+    *,
+    b: int,
+    a_bucket: int,
+    pae_padding_value: float = 1_000.0,
+    pae_logits: jnp.ndarray | None = None,
+) -> StructureModelOutput:
+    n = real.plddt.shape[0]
+    a = real.structure_coordinates.shape[1]
+    padded = _padded_output(b=b, a_bucket=a_bucket)
+    if pae_logits is None:
+        pae_logits = (
+            jnp.full((b, b, real.pae_logits.shape[-1]), -50.0)
+            .at[:n, :n, :]
+            .set(real.pae_logits)
+        )
+    return dataclasses.replace(
+        padded,
+        distogram_logits=(
+            jnp.full((b, b, real.distogram_logits.shape[-1]), -50.0)
+            .at[:n, :n, :]
+            .set(real.distogram_logits)
+        ),
+        distogram_bins=real.distogram_bins,
+        plddt=jnp.full((b,), -50.0).at[:n].set(real.plddt),
+        pae=jnp.full((b, b), pae_padding_value).at[:n, :n].set(real.pae),
+        pae_logits=pae_logits,
+        pae_bins=real.pae_bins,
+        structure_coordinates=(
+            jnp.full((1, a_bucket, 3), -50.0)
+            .at[:, :a, :]
+            .set(real.structure_coordinates)
+        ),
+        backbone_coordinates=(
+            jnp.full((b, 4, 3), -50.0).at[:n].set(real.backbone_coordinates)
+        ),
+        full_sequence=jnp.full((b, 20), -50.0).at[:n].set(real.full_sequence),
+        asym_id=jnp.full((b,), -1.0).at[:n].set(real.asym_id),
+        residue_idx=jnp.full((b,), -1, dtype=real.residue_idx.dtype)
+        .at[:n]
+        .set(real.residue_idx),
+        atom37_coords=jnp.full((b, 37, 3), -50.0).at[:n].set(real.atom37_coords),
+        atom37_mask=jnp.zeros((b, 37)).at[:n].set(real.atom37_mask),
+    )
+
+
+def _sequence(binder_len: int) -> jnp.ndarray:
+    return jnp.zeros((binder_len, 20), dtype=jnp.float32)
 
 
 def test_slice_padded_model_output_trims_token_and_atom_axes():
@@ -170,6 +225,112 @@ def test_real_shapes_from_padded_features_handles_atom_only_padding():
     )
     assert n_real_tokens == n
     assert n_real_atoms == a
+
+
+def test_atom_only_padding_shape_recovery_trims_structure_coordinates():
+    n = b = 5
+    a, a_bucket = 18, 64
+    features = {
+        "token_mask": np.ones(b, dtype=np.float32),
+        "atom_to_token_idx": np.concatenate(
+            [
+                np.minimum(
+                    np.repeat(np.arange(n, dtype=np.int32), -(-a // n))[:a],
+                    n - 1,
+                ),
+                np.full(a_bucket - a, n - 1, dtype=np.int32),
+            ]
+        ),
+        "ref_mask": np.concatenate([np.ones(a), np.zeros(a_bucket - a)]).astype(
+            np.float32
+        ),
+    }
+
+    n_real_tokens, n_real_atoms = real_shapes_from_padded_features(features)
+    padded = _padded_output(b=b, a_bucket=a_bucket)
+    sliced = _slice_padded_model_output(
+        padded,
+        n_real_tokens=n_real_tokens,
+        n_real_atoms=n_real_atoms,
+    )
+
+    assert sliced.structure_coordinates.shape == (1, a, 3)
+    np.testing.assert_array_equal(
+        np.asarray(sliced.structure_coordinates),
+        np.asarray(padded.structure_coordinates[:, :a, :]),
+    )
+
+
+def test_binder_target_pae_loss_is_invariant_to_padding_after_slicing():
+    binder_len = 2
+    n, a = 6, 18
+    b, a_bucket = 12, 64
+    real = _padded_output(b=n, a_bucket=a)
+    padded = _embed_real_output_in_padding(
+        real,
+        b=b,
+        a_bucket=a_bucket,
+        pae_padding_value=1_000.0,
+    )
+    sliced = _slice_padded_model_output(
+        padded,
+        n_real_tokens=n,
+        n_real_atoms=a,
+    )
+
+    loss = BinderTargetPAE()
+    sequence = _sequence(binder_len)
+    real_value, real_aux = loss(sequence=sequence, output=real, key=None)
+    sliced_value, sliced_aux = loss(sequence=sequence, output=sliced, key=None)
+    padded_value, _ = loss(sequence=sequence, output=padded, key=None)
+
+    np.testing.assert_allclose(np.asarray(sliced_value), np.asarray(real_value))
+    np.testing.assert_allclose(
+        np.asarray(sliced_aux["bt_pae"]), np.asarray(real_aux["bt_pae"])
+    )
+    assert not np.isclose(float(padded_value), float(real_value))
+
+
+def test_iptm_loss_is_invariant_to_padding_after_slicing():
+    binder_len = 2
+    n, a = 6, 18
+    b, a_bucket = 24, 64
+    pae_bins = jnp.arange(8, dtype=jnp.float32) + 0.5
+    far_logits = jnp.full((n, n, 8), -20.0).at[..., -1].set(20.0)
+    real = dataclasses.replace(
+        _padded_output(b=n, a_bucket=a),
+        pae_logits=far_logits,
+        pae_bins=pae_bins,
+    )
+
+    low_distance_logits = jnp.full((8,), -20.0).at[0].set(20.0)
+    padded_logits = jnp.full((b, b, 8), -20.0).at[..., -1].set(20.0)
+    padded_logits = padded_logits.at[:, n:, :].set(low_distance_logits)
+    padded_logits = padded_logits.at[n:, :, :].set(low_distance_logits)
+    padded_logits = padded_logits.at[:n, :n, :].set(real.pae_logits)
+    padded = _embed_real_output_in_padding(
+        real,
+        b=b,
+        a_bucket=a_bucket,
+        pae_logits=padded_logits,
+    )
+    sliced = _slice_padded_model_output(
+        padded,
+        n_real_tokens=n,
+        n_real_atoms=a,
+    )
+
+    loss = IPTMLoss()
+    sequence = _sequence(binder_len)
+    real_value, real_aux = loss(sequence=sequence, output=real, key=None)
+    sliced_value, sliced_aux = loss(sequence=sequence, output=sliced, key=None)
+    padded_value, _ = loss(sequence=sequence, output=padded, key=None)
+
+    np.testing.assert_allclose(np.asarray(sliced_value), np.asarray(real_value))
+    np.testing.assert_allclose(
+        np.asarray(sliced_aux["iptm"]), np.asarray(real_aux["iptm"])
+    )
+    assert not np.isclose(float(padded_value), float(real_value))
 
 
 def test_multisample_loss_skips_slicing_when_features_unpadded():
