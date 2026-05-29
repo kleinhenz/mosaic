@@ -374,15 +374,17 @@ def real_shapes_from_padded_features(
     that were not bucket-padded.
 
     Detection keys off the ``token_mask`` key that ``pad_features`` adds.
-    Real atom count is recovered from ``atom_to_token_idx``: real atoms map
-    to token indices in ``[0, n_real_tokens)``, padding atoms map to
-    ``[n_real_tokens, b)``, so ``(atom_to_token_idx < n_real_tokens).sum()``
-    gives the original atom count.
+    Real atom count is recovered from ``ref_mask``: padding atoms have mask 0,
+    including atom-only padding cases where there are no padding tokens and
+    ``atom_to_token_idx`` maps padding atoms onto a real token.
     """
     if "token_mask" not in features:
         return None, None
     token_mask = np.asarray(features["token_mask"])
     n_real_tokens = int(token_mask.sum())
-    atom_to_token_idx = np.asarray(features["atom_to_token_idx"])
-    n_real_atoms = int((atom_to_token_idx < n_real_tokens).sum())
+    if "ref_mask" in features:
+        n_real_atoms = int(np.asarray(features["ref_mask"]).sum())
+    else:
+        atom_to_token_idx = np.asarray(features["atom_to_token_idx"])
+        n_real_atoms = int((atom_to_token_idx < n_real_tokens).sum())
     return n_real_tokens, n_real_atoms
