@@ -24,7 +24,7 @@ dependencies = [
     "jablang",
     "torchvision>=v0.22.0",
     "equinox>=0.13.0",
-    "torch==2.7.1",
+    "torch>=2.7.1",
     "numpy>=2.1",
     "protenij",
     "httpx>=0.28.1",
@@ -110,6 +110,7 @@ addopts = "-m 'not slow'"
 
 [tool.uv]
 required-environments = ["sys_platform == 'linux' and platform_machine == 'x86_64'"]
+override-dependencies = ["torch>=2.11,<2.12"]
 conflicts = [
     [
       { group = "jax-cpu" },
@@ -118,4 +119,3 @@ conflicts = [
     ],
 ]
 package = true
-
