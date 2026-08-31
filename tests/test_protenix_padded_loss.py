@@ -9,7 +9,7 @@ tokens and contaminate every binder-vs-target loss.
 The fix routes the per-sample model output through
 ``_slice_padded_model_output`` inside ``MultiSampleProtenixLoss.__call__``
 when bucket padding was applied.  These tests pin the slicing helper and the
-``token_mask``-based detection used by ``real_shapes_from_padded_features``.
+padding-mask-based detection used by ``real_shapes_from_padded_features``.
 """
 
 from __future__ import annotations
@@ -169,28 +169,16 @@ def test_real_shapes_from_unpadded_features_returns_none():
 
 
 def test_real_shapes_from_padded_features_recovers_pre_padding_counts():
-    """For features the protenij padder built, ``token_mask.sum()`` gives the
-    real token count and ``ref_mask.sum()`` gives the real atom count."""
+    """The Protenij padding masks recover the original token and atom counts."""
     n, a = 5, 18
     b, a_bucket = 16, 64
 
-    # token_mask: ``pad_features`` writes [1]*n + [0]*(b-n).
-    token_mask = np.concatenate([np.ones(n), np.zeros(b - n)]).astype(np.float32)
-    # atom_to_token_idx: ``pad_features`` keeps the real-atom token indices in
-    # ``[0, n)`` for the first ``a`` entries, then cyclically maps padding
-    # atoms to padding tokens in ``[n, b)``.
-    real_to_token = np.minimum(
-        np.repeat(np.arange(n, dtype=np.int32), -(-a // n))[:a],
-        n - 1,
-    )
-    pad_to_token = (np.arange(a_bucket - a, dtype=np.int32) % (b - n)) + n
-    atom_to_token_idx = np.concatenate([real_to_token, pad_to_token])
-
     n_real_tokens, n_real_atoms = real_shapes_from_padded_features(
         {
-            "token_mask": token_mask,
-            "atom_to_token_idx": atom_to_token_idx,
-            "ref_mask": np.concatenate(
+            "token_mask": np.concatenate(
+                [np.ones(n), np.zeros(b - n)]
+            ).astype(np.float32),
+            "atom_padding_mask": np.concatenate(
                 [np.ones(a), np.zeros(a_bucket - a)]
             ).astype(np.float32),
         }
@@ -200,50 +188,37 @@ def test_real_shapes_from_padded_features_recovers_pre_padding_counts():
 
 
 def test_real_shapes_from_padded_features_handles_atom_only_padding():
-    """When only the atom axis grows, padding atoms map to the final real token
-    and must be counted from ``ref_mask`` instead of ``atom_to_token_idx``."""
+    """Atom padding metadata works when the token axis is already bucket-sized."""
     n = b = 5
     a, a_bucket = 18, 64
 
-    token_mask = np.ones(b, dtype=np.float32)
-    real_to_token = np.minimum(
-        np.repeat(np.arange(n, dtype=np.int32), -(-a // n))[:a],
-        n - 1,
-    )
-    pad_to_token = np.full(a_bucket - a, n - 1, dtype=np.int32)
-    atom_to_token_idx = np.concatenate([real_to_token, pad_to_token])
-    ref_mask = np.concatenate([np.ones(a), np.zeros(a_bucket - a)]).astype(
-        np.float32
-    )
-
     n_real_tokens, n_real_atoms = real_shapes_from_padded_features(
         {
-            "token_mask": token_mask,
-            "atom_to_token_idx": atom_to_token_idx,
-            "ref_mask": ref_mask,
+            "token_mask": np.ones(b, dtype=np.float32),
+            "atom_padding_mask": np.concatenate(
+                [np.ones(a), np.zeros(a_bucket - a)]
+            ).astype(np.float32),
         }
     )
     assert n_real_tokens == n
     assert n_real_atoms == a
 
 
+def test_real_shapes_from_padded_features_requires_atom_padding_mask():
+    with pytest.raises(KeyError, match="atom_padding_mask"):
+        real_shapes_from_padded_features(
+            {"token_mask": np.array([1.0, 0.0], dtype=np.float32)}
+        )
+
+
 def test_atom_only_padding_shape_recovery_trims_structure_coordinates():
-    n = b = 5
+    b = 5
     a, a_bucket = 18, 64
     features = {
         "token_mask": np.ones(b, dtype=np.float32),
-        "atom_to_token_idx": np.concatenate(
-            [
-                np.minimum(
-                    np.repeat(np.arange(n, dtype=np.int32), -(-a // n))[:a],
-                    n - 1,
-                ),
-                np.full(a_bucket - a, n - 1, dtype=np.int32),
-            ]
-        ),
-        "ref_mask": np.concatenate([np.ones(a), np.zeros(a_bucket - a)]).astype(
-            np.float32
-        ),
+        "atom_padding_mask": np.concatenate(
+            [np.ones(a), np.zeros(a_bucket - a)]
+        ).astype(np.float32),
     }
 
     n_real_tokens, n_real_atoms = real_shapes_from_padded_features(features)

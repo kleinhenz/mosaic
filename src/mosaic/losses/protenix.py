@@ -378,25 +378,14 @@ def real_shapes_from_padded_features(
     :func:`protenij.padding.pad_features`, or ``(None, None)`` for features
     that were not bucket-padded.
 
-    Detection keys off the ``token_mask`` key that ``pad_features`` adds. New
-    padded feature dicts also carry ``atom_padding_mask``, which distinguishes
-    tail padding from real atoms whose reference conformer is unavailable and
-    therefore have ``ref_mask=0``. Legacy token-padded inputs can recover the
-    same count from ``atom_to_token_idx``; ``ref_mask`` is retained only as an
-    atom-only-padding compatibility fallback.
+    Detection keys off the ``token_mask`` key that ``pad_features`` adds.
+    Padded feature dicts must also carry ``atom_padding_mask``, which
+    distinguishes tail padding from real atoms whose reference conformer is
+    unavailable and therefore have ``ref_mask=0``.
     """
     if "token_mask" not in features:
         return None, None
     token_mask = np.asarray(features["token_mask"])
     n_real_tokens = int(token_mask.sum())
-    if "atom_padding_mask" in features:
-        n_real_atoms = int(np.asarray(features["atom_padding_mask"]).sum())
-    elif "atom_to_token_idx" in features and n_real_tokens < int(token_mask.shape[0]):
-        atom_to_token_idx = np.asarray(features["atom_to_token_idx"])
-        n_real_atoms = int((atom_to_token_idx < n_real_tokens).sum())
-    elif "ref_mask" in features:
-        n_real_atoms = int(np.asarray(features["ref_mask"]).sum())
-    else:
-        atom_to_token_idx = np.asarray(features["atom_to_token_idx"])
-        n_real_atoms = int((atom_to_token_idx < n_real_tokens).sum())
+    n_real_atoms = int(np.asarray(features["atom_padding_mask"]).sum())
     return n_real_tokens, n_real_atoms
