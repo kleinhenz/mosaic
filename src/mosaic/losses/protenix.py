@@ -123,12 +123,14 @@ def get_trunk_state(
     recycling_steps: int,
     key: jax.Array,
 ) -> tuple[InitialEmbedding, TrunkEmbedding]:
-    """ Compute trunk embedding."""
+    """Compute trunk embedding."""
     # manual recycling
+    token_mask = features.get("token_mask")
+    pair_mask = (
+        token_mask[:, None] * token_mask[None, :] if token_mask is not None else None
+    )
     state = initial_recycling_state
-    initial_embedding = model.embed_inputs(
-        input_feature_dict=features
-    )  
+    initial_embedding = model.embed_inputs(input_feature_dict=features)
     if state is None:
         state = TrunkEmbedding(
             s=jnp.zeros_like(initial_embedding.s_init),
@@ -143,17 +145,21 @@ def get_trunk_state(
             model.layernorm_z_cycle(z)
         )
         if model.template_embedder.n_blocks > 0:
-            z = z + model.template_embedder(features, z, pair_mask=None, key=key)
+            z = z + model.template_embedder(features, z, pair_mask=pair_mask, key=key)
         z = model.msa_module(
             features,
             z,
             initial_embedding.s_inputs,
-            pair_mask=None,
+            pair_mask=pair_mask,
             key=key,
         )
         s = initial_embedding.s_init + model.linear_no_bias_s(model.layernorm_s(s))
         s, z = model.pairformer_stack(
-            s, z, pair_mask=None, key=jax.random.fold_in(key, 1)
+            s,
+            z,
+            pair_mask=pair_mask,
+            key=jax.random.fold_in(key, 1),
+            apply_attn_mask=pair_mask is not None,
         )
         return (iter + 1, TrunkEmbedding(s=s, z=z), jax.random.fold_in(key, 1))
 
@@ -179,6 +185,16 @@ def protenix_forward_from_trunk(
     key: jax.Array,
 ) -> StructureModelOutput:
     """Run distogram, structure, and confidence from pre-computed trunk state."""
+    token_mask = features.get("token_mask")
+    pair_mask = (
+        token_mask[:, None] * token_mask[None, :] if token_mask is not None else None
+    )
+    atom_mask = None
+    if token_mask is not None:
+        # Match Protenij.__call__: ref_mask is the structure module's semantic
+        # atom mask. ``atom_padding_mask`` is metadata for shape recovery only.
+        atom_mask = features.get("ref_mask")
+
     distogram_logits = model.distogram_head(trunk_state.z)
 
     structure_coordinates = model.sample_structures(
@@ -188,6 +204,7 @@ def protenix_forward_from_trunk(
         N_samples=1,
         N_steps=sampling_steps,
         key=key,
+        atom_mask=atom_mask,
     )
 
     confidence = model.confidence_metrics(
@@ -196,6 +213,7 @@ def protenix_forward_from_trunk(
         input_feature_dict=features,
         coordinates=structure_coordinates,
         key=key,
+        pair_mask=pair_mask,
     )
 
     # pLDDT normalized to [0, 1]
@@ -360,16 +378,23 @@ def real_shapes_from_padded_features(
     :func:`protenij.padding.pad_features`, or ``(None, None)`` for features
     that were not bucket-padded.
 
-    Detection keys off the ``token_mask`` key that ``pad_features`` adds.
-    Real atom count is recovered from ``ref_mask``: padding atoms have mask 0,
-    including atom-only padding cases where there are no padding tokens and
-    ``atom_to_token_idx`` maps padding atoms onto a real token.
+    Detection keys off the ``token_mask`` key that ``pad_features`` adds. New
+    padded feature dicts also carry ``atom_padding_mask``, which distinguishes
+    tail padding from real atoms whose reference conformer is unavailable and
+    therefore have ``ref_mask=0``. Legacy token-padded inputs can recover the
+    same count from ``atom_to_token_idx``; ``ref_mask`` is retained only as an
+    atom-only-padding compatibility fallback.
     """
     if "token_mask" not in features:
         return None, None
     token_mask = np.asarray(features["token_mask"])
     n_real_tokens = int(token_mask.sum())
-    if "ref_mask" in features:
+    if "atom_padding_mask" in features:
+        n_real_atoms = int(np.asarray(features["atom_padding_mask"]).sum())
+    elif "atom_to_token_idx" in features and n_real_tokens < int(token_mask.shape[0]):
+        atom_to_token_idx = np.asarray(features["atom_to_token_idx"])
+        n_real_atoms = int((atom_to_token_idx < n_real_tokens).sum())
+    elif "ref_mask" in features:
         n_real_atoms = int(np.asarray(features["ref_mask"]).sum())
     else:
         atom_to_token_idx = np.asarray(features["atom_to_token_idx"])
