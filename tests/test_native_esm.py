@@ -89,7 +89,7 @@ def test_native_esmc_loading_and_sequence_gradient(tmp_path, monkeypatch):
         EsmcConfig(hidden_size=32, num_attention_heads=4, num_hidden_layers=2)
     ).eval()
     _save_checkpoint(model, tmp_path)
-    converted = load_esmc(str(tmp_path))
+    converted = load_esmc(str(tmp_path), compute_dtype="float32")
     ids = np.array([[0, 5, 6, 2]], dtype=np.int32)
     with torch.no_grad():
         expected = model(torch.from_numpy(ids)).logits.numpy()
